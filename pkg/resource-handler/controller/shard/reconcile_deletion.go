@@ -130,6 +130,10 @@ func (r *ShardReconciler) handleDeletion(
 		return ctrl.Result{}, err
 	}
 
+	// The shard is done reconciling; drop its strike entries so a shard
+	// deleted mid-backoff does not leak its counters.
+	r.forgetStrikes(shard.Namespace, shard.Name)
+
 	// Remove the finalizer last so Kubernetes can finish deletion now that the
 	// PVC cleanup has run.
 	if slices.Contains(shard.Finalizers, shardFinalizer) {

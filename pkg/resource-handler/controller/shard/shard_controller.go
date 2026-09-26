@@ -79,9 +79,22 @@ type ShardReconciler struct {
 	APIReader       client.Reader
 	PoolerClients   poolerclient.Resolver
 	CreateTopoStore func(*multigresv1alpha1.Shard) (topoclient.Store, error)
+	// Clock overrides time.Now for recordNotConverged's elapsed-time math.
+	// Nil in production; tests inject it to drive the readiness backoff
+	// deterministically.
+	Clock func() time.Time
 
 	postureStrikesMu sync.Mutex
 	postureStrikes   map[string]int
+
+	// notConvergedMu and notConvergedSince record, per shard, the time it was
+	// first observed not converged: unsettled (posture debounce past
+	// threshold, i.e. an accepted mismatch or Incomplete observation), or some
+	// managed pod not yet posture-ready. Kept separate from postureStrikes,
+	// which gates posture.Apply: folding this into that counter would change
+	// when Apply fires.
+	notConvergedMu    sync.Mutex
+	notConvergedSince map[string]time.Time
 }
 
 // Reconcile manages pool pods, PVCs, services, and data-plane topology for a Shard.
@@ -109,6 +122,7 @@ func (r *ShardReconciler) Reconcile(
 	if err := r.Get(ctx, req.NamespacedName, shard); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Shard resource not found, ignoring")
+			r.forgetStrikes(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		monitoring.RecordSpanError(span, err)

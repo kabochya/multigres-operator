@@ -43,10 +43,10 @@ const thrashPoolName = PoolName("default")
 // changes, then requires the namespace to go quiet and every pool PVC to be
 // bound to a live pod.
 //
-// It does not assert on this thrashed shard's status.podRoles: whether the
-// last scale-up's role lands there is a race against the defect that
-// pinPoolScaleUpRoleStale constructs deterministically on a namespace of its
-// own, so asserting it here would only sample that race.
+// It does not assert on this thrashed shard's status.podRoles itself:
+// requirePoolScaleUpLandsRole asserts that claim deterministically on a
+// namespace of its own, and asserting it here too would only be a second,
+// weaker sample of the same thing.
 func testPoolReplicaThrash(t *testing.T) {
 	c := newCase(t)
 	cluster := c.poolThrashCluster("pool-thrash", 1)
@@ -60,15 +60,19 @@ func testPoolReplicaThrash(t *testing.T) {
 		c.scalePoolTo(cluster, n)
 	}
 
-	// MGO-POOL-SCALEUP-ROLE-STALE: once a shard reconciled to Healthy with N
-	// poolers, raising replicasPerCell to add an (N+1)th sometimes never gets
-	// that pooler's role into shard.Status.PodRoles, permanently.
+	// Fixed: scaling a pool from N to N+1 lands the new pooler's role in
+	// shard.Status.PodRoles even when the pooler registers in topology after
+	// the shard has already reconciled to Healthy. The shard controller's
+	// readiness requeue is what closes the gap, since nothing else notices a
+	// registration: it is a write to the topology store, with no Kubernetes
+	// event behind it.
 	//
-	// Whether it bites depends on whether the pooler registers before or
-	// after the reconcile that declares the shard converged, so sampled
-	// naturally it reproduces about a third of the time. The pin constructs
-	// that ordering instead, which makes it deterministic.
-	pinPoolScaleUpRoleStale(t)
+	// The pin this replaces was statistical because the defect was: whether it
+	// bit depended on whether the pooler registered before or after the
+	// reconcile that declared the shard converged, so it reproduced about a
+	// third of the time. Fixed, it is deterministic, so a positive assertion
+	// replaces what used to be a KnownDefect pin.
+	requirePoolScaleUpLandsRole(t)
 
 	c.RequireQuiescent(10*time.Second, 90*time.Second)
 
@@ -84,20 +88,19 @@ func testPoolReplicaThrash(t *testing.T) {
 	c.requireNoOrphanedPoolPVCs(live)
 }
 
-// pinPoolScaleUpRoleStale pins that scaling a pool from one to two does not
-// land the new pooler's role in status.podRoles when the pooler registers
-// after the shard has already converged.
+// requirePoolScaleUpLandsRole asserts that scaling a pool from one to two
+// lands the new pooler's role in status.podRoles.
 //
 // On its own namespace and its own cluster, with no thrash, because the
-// defect never needed one: a bare single scale-up reproduces it, and the
-// thrash above only found it first.
+// defect this replaces never needed one: a bare single scale-up reproduced
+// it, and the thrash above only found it first.
 //
 // Nothing wakes the shard once it is Healthy: a registration is a write to
-// the topology store, with no Kubernetes event behind it, and the shard does
-// not requeue itself while a managed pod is still awaiting its pooler. The fix
-// is that requeue; with it the role lands well inside a second here, because
-// the suite compresses requeues, so the window below is generous.
-func pinPoolScaleUpRoleStale(t *testing.T) {
+// the topology store, with no Kubernetes event behind it. The shard
+// controller now requeues on a backoff while any managed pod has not reached
+// posture readiness, so the role lands well inside a second here, because the
+// suite compresses requeues, so the window below is generous.
+func requirePoolScaleUpLandsRole(t *testing.T) {
 	t.Helper()
 
 	c := newCase(t)
@@ -162,31 +165,24 @@ func pinPoolScaleUpRoleStale(t *testing.T) {
 
 	// Now the pooler appears, with no Kubernetes event to announce it: a
 	// registration is a write to etcd. Only a requeue the operator asked for
-	// itself can notice, which is the thing this pins.
+	// itself can notice, which is the thing this asserts.
 	release()
 
-	// Retire this pin by replacing it with c.Eventually on the same condition.
-	c.KnownDefect("MGO-POOL-SCALEUP-ROLE-STALE", func() error {
-		var members Members
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			var err error
-			members, err = MembersOf(c.Context(), c.Client(), key)
+	c.Eventually(
+		60*time.Second,
+		"the scaled-up pooler's role to reach status.podRoles",
+		func() error {
+			members, err := MembersOf(c.Context(), c.Client(), key)
 			// A read failure is the check's own setup failing, not the
-			// defect, so it fails the test rather than keeping the pin green.
+			// convergence it is waiting for, so it fails the test immediately
+			// rather than retrying it silently until the timeout.
 			c.NoError(err, "read shard members")
-			if len(members.Replicas) == 1 && len(members.Quarantined) == 0 {
-				return nil
+			if len(members.Replicas) != 1 || len(members.Quarantined) != 0 {
+				return fmt.Errorf("got %+v", members)
 			}
-			if time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
-		return fmt.Errorf(
-			"the scaled-up pooler registered after the shard converged and its role "+
-				"never reached status.podRoles within 20s: got %+v", members)
-	})
+			return nil
+		},
+	)
 }
 
 func (c *C) poolThrashCluster(
@@ -243,10 +239,9 @@ func (c *C) scalePoolTo(cluster *MultigresCluster, n int32) {
 // liveReadyPoolPodNames lists Ready pods belonging to the thrashed pool.
 //
 // This deliberately does not go through MembersOf/shard.Status.PodRoles: that
-// path is exactly what MGO-POOL-SCALEUP-ROLE-STALE (see
-// testPoolReplicaThrash) breaks, and a pod being live is a Kubernetes-level
-// fact independent of whether the operator's own role bookkeeping has caught
-// up to it.
+// path is the one testPoolReplicaThrash's pool-scale-up assertion covers
+// directly, and a pod being live is a Kubernetes-level fact independent of
+// whether the operator's own role bookkeeping has caught up to it.
 func (c *C) liveReadyPoolPodNames() []string {
 	c.Helper()
 	pods := &corev1.PodList{}

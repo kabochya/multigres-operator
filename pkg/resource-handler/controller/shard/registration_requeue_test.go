@@ -22,6 +22,8 @@ import (
 	multigresv1alpha1 "github.com/multigres/multigres-operator/api/v1alpha1"
 	"github.com/multigres/multigres-operator/pkg/data-handler/poolerclient"
 	"github.com/multigres/multigres-operator/pkg/util/metadata"
+
+	"github.com/multigres/testkit/assert"
 )
 
 // fakeClock lets a test drive recordNotConverged's elapsed-time math without
@@ -71,10 +73,8 @@ func TestReadinessBackoffDelayClampsElapsedTime(t *testing.T) {
 		// than on one draw.
 		for range 200 {
 			got := readinessBackoffDelay(tc.elapsed)
-			if got < tc.min || got > tc.max {
-				t.Fatalf("elapsed=%v: delay %v outside [%v, %v]",
-					tc.elapsed, got, tc.min, tc.max)
-			}
+			assert.NewAborting(t).
+				False(got < tc.min || got > tc.max, "elapsed=%v: delay %v outside [%v, %v]", tc.elapsed, got, tc.min, tc.max)
 		}
 	}
 }
@@ -90,10 +90,9 @@ func TestReadinessBackoffDelayIsNeverZero(t *testing.T) {
 		30 * time.Second, time.Minute, time.Hour,
 	} {
 		for range 50 {
-			if got := readinessBackoffDelay(elapsed); got <= 0 {
-				t.Fatalf("elapsed=%v produced a non-positive delay %v, "+
-					"which controller-runtime reads as no requeue", elapsed, got)
-			}
+			got := readinessBackoffDelay(elapsed)
+			assert.NewAborting(t).Greater(0, got, "elapsed=%v produced a non-positive delay %v, "+
+				"which controller-runtime reads as no requeue", elapsed, got)
 		}
 	}
 }
@@ -108,9 +107,7 @@ func TestReadinessBackoffDelayJitters(t *testing.T) {
 	for range 200 {
 		seen[readinessBackoffDelay(30*time.Second)] = true
 	}
-	if len(seen) < 10 {
-		t.Fatalf("only %d distinct delays across 200 draws; jitter is not applied", len(seen))
-	}
+	assert.NewAborting(t).GreaterOrEqual(10, len(seen), "only")
 }
 
 // shardNamed is the minimum a strike counter reads.
@@ -134,9 +131,7 @@ func TestPostureStrikesLeaveNoEntryOnceSettled(t *testing.T) {
 		r.recordPostureObservation(s, false)
 	}
 
-	if got := len(r.postureStrikes); got != 0 {
-		t.Fatalf("a thousand shards seen and settled left %d entries, want 0", got)
-	}
+	assert.NewAborting(t).Eq(0, len(r.postureStrikes), "a thousand shards seen and settled left")
 }
 
 // TestPostureStrikesDoNotSurviveRecreation pins the intended semantic: a
@@ -146,6 +141,7 @@ func TestPostureStrikesLeaveNoEntryOnceSettled(t *testing.T) {
 // do not pick a requeue delay, that is notConvergedSince's job.
 func TestPostureStrikesDoNotSurviveRecreation(t *testing.T) {
 	t.Parallel()
+	c := assert.NewAborting(t)
 
 	r := &ShardReconciler{}
 	s := shardNamed("ns", "shard-0")
@@ -153,37 +149,32 @@ func TestPostureStrikesDoNotSurviveRecreation(t *testing.T) {
 	for range 5 {
 		r.recordPostureObservation(s, true)
 	}
-	if got := r.recordPostureObservation(s, false); got != 0 {
-		t.Fatalf("a settled observation reported %d strikes, want 0", got)
-	}
+	c.Eq(0, r.recordPostureObservation(s, false), "a settled observation reported")
 
 	// The replacement is a different object at the same key, which is what
 	// the tablegroup controller creates after a Shard is deleted.
-	if got := r.recordPostureObservation(shardNamed("ns", "shard-0"), true); got != 1 {
-		t.Fatalf("a recreated shard opened at %d strikes, want 1", got)
-	}
+	c.Eq(
+		1,
+		r.recordPostureObservation(shardNamed("ns", "shard-0"), true),
+		"a recreated shard opened at",
+	)
 }
 
 // TestPostureStrikesCountConsecutiveUnsettled pins what the counter is for,
 // so settling on delete cannot be "fixed" into never counting at all.
 func TestPostureStrikesCountConsecutiveUnsettled(t *testing.T) {
 	t.Parallel()
+	c := assert.NewAborting(t)
 
 	r := &ShardReconciler{}
 	s := shardNamed("ns", "shard-0")
 	for want := 1; want <= 3; want++ {
-		if got := r.recordPostureObservation(s, true); got != want {
-			t.Fatalf("consecutive unsettled observation %d reported %d strikes", want, got)
-		}
+		c.Eq(want, r.recordPostureObservation(s, true), "consecutive unsettled observation")
 	}
 	// Shards are counted independently, which is the only reason the map has
 	// keys at all.
-	if got := r.recordPostureObservation(shardNamed("ns", "other"), true); got != 1 {
-		t.Fatalf("a second shard opened at %d strikes, want 1", got)
-	}
-	if got := r.recordPostureObservation(s, true); got != 4 {
-		t.Fatalf("the first shard reported %d strikes after a second shard, want 4", got)
-	}
+	c.Eq(1, r.recordPostureObservation(shardNamed("ns", "other"), true), "a second shard opened at")
+	c.Eq(4, r.recordPostureObservation(s, true), "the first shard reported")
 }
 
 // TestNotConvergedSinceLeavesNoEntryOnceSettled mirrors
@@ -200,9 +191,7 @@ func TestNotConvergedSinceLeavesNoEntryOnceSettled(t *testing.T) {
 		r.recordNotConverged(s, false)
 	}
 
-	if got := len(r.notConvergedSince); got != 0 {
-		t.Fatalf("a thousand shards seen and settled left %d entries, want 0", got)
-	}
+	assert.NewAborting(t).Eq(0, len(r.notConvergedSince), "a thousand shards seen and settled left")
 }
 
 // TestNotConvergedSinceTracksElapsedTime pins the elapsed-time semantics: the
@@ -211,38 +200,36 @@ func TestNotConvergedSinceLeavesNoEntryOnceSettled(t *testing.T) {
 // it so a later not-converged spell starts over rather than resuming.
 func TestNotConvergedSinceTracksElapsedTime(t *testing.T) {
 	t.Parallel()
+	c := assert.NewAborting(t)
 
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	r := &ShardReconciler{Clock: clk.now}
 	s := shardNamed("ns", "shard-0")
 
-	if got := r.recordNotConverged(s, true); got != 0 {
-		t.Fatalf("first not-converged observation reported elapsed %v, want 0", got)
-	}
+	c.Eq(0, r.recordNotConverged(s, true), "first not-converged observation reported elapsed")
 	clk.advance(37 * time.Second)
-	if got := r.recordNotConverged(s, true); got != 37*time.Second {
-		t.Fatalf("second not-converged observation reported elapsed %v, want 37s", got)
-	}
+	c.Eq(
+		37*time.Second,
+		r.recordNotConverged(s, true),
+		"second not-converged observation reported elapsed",
+	)
 	// A burst of same-instant calls (a wave of unrelated pod events) must not
 	// itself advance the elapsed time.
-	if got := r.recordNotConverged(s, true); got != 37*time.Second {
-		t.Fatalf(
-			"third not-converged observation (no time passed) reported elapsed %v, want 37s", got,
-		)
-	}
+	c.Eq(
+		37*time.Second,
+		r.recordNotConverged(s, true),
+		"third not-converged observation (no time passed) reported elapsed",
+	)
 
-	if got := r.recordNotConverged(s, false); got != 0 {
-		t.Fatalf("a settled observation reported elapsed %v, want 0", got)
-	}
-	if got := r.recordNotConverged(s, true); got != 0 {
-		t.Fatalf("a fresh not-converged spell reported elapsed %v, want 0 (not resumed)", got)
-	}
+	c.Eq(0, r.recordNotConverged(s, false), "a settled observation reported elapsed")
+	c.Eq(0, r.recordNotConverged(s, true), "a fresh not-converged spell reported elapsed")
 }
 
 // TestForgetStrikesDropsBothCounters pins that a Shard's strike entries do
 // not survive forgetStrikes, in either counter.
 func TestForgetStrikesDropsBothCounters(t *testing.T) {
 	t.Parallel()
+	c := assert.NewAborting(t)
 
 	r := &ShardReconciler{}
 	s := shardNamed("ns", "shard-0")
@@ -251,12 +238,8 @@ func TestForgetStrikesDropsBothCounters(t *testing.T) {
 
 	r.forgetStrikes(s.Namespace, s.Name)
 
-	if got := len(r.postureStrikes); got != 0 {
-		t.Fatalf("posture strikes: %d entries survived forgetStrikes, want 0", got)
-	}
-	if got := len(r.notConvergedSince); got != 0 {
-		t.Fatalf("not-converged-since: %d entries survived forgetStrikes, want 0", got)
-	}
+	c.Eq(0, len(r.postureStrikes), "posture strikes")
+	c.Eq(0, len(r.notConvergedSince), "not-converged-since")
 }
 
 // TestHandleDeletionForgetsStrikes drives the deletion cleanup through the
@@ -264,6 +247,7 @@ func TestForgetStrikesDropsBothCounters(t *testing.T) {
 // directly, so a regression that stops handleDeletion from reaching it is
 // caught here rather than only in the helper's own unit test.
 func TestHandleDeletionForgetsStrikes(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Finalizers = []string{shardFinalizer}
 	now := metav1.Now()
@@ -285,16 +269,14 @@ func TestHandleDeletionForgetsStrikes(t *testing.T) {
 	r.postureStrikes = map[string]int{key: 2}
 	r.notConvergedSince = map[string]time.Time{key: time.Now()}
 
-	if _, err := r.handleDeletion(t.Context(), shard); err != nil {
-		t.Fatalf("handleDeletion() error = %v", err)
-	}
+	_, err := r.handleDeletion(t.Context(), shard)
+	ck.Require().NoError(err, "handleDeletion() error =")
 
 	if _, ok := r.postureStrikes[key]; ok {
 		t.Errorf("posture strikes entry for %s survived handleDeletion", key)
 	}
-	if _, ok := r.notConvergedSince[key]; ok {
-		t.Errorf("not-converged-since entry for %s survived handleDeletion", key)
-	}
+	_, ok := r.notConvergedSince[key]
+	ck.False(ok, "not-converged-since entry for %s survived handleDeletion", key)
 }
 
 // TestReconcileForgetsStrikesOnNotFound drives the not-found cleanup through
@@ -302,6 +284,7 @@ func TestHandleDeletionForgetsStrikes(t *testing.T) {
 // once handleDeletion above has already run and removed the finalizer) must
 // still have its strike entries dropped, as a backstop.
 func TestReconcileForgetsStrikesOnNotFound(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	scheme := postureTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &ShardReconciler{
@@ -317,16 +300,14 @@ func TestReconcileForgetsStrikesOnNotFound(t *testing.T) {
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "default", Name: "gone-shard"},
 	}
-	if _, err := r.Reconcile(t.Context(), req); err != nil {
-		t.Fatalf("Reconcile() error = %v", err)
-	}
+	_, err := r.Reconcile(t.Context(), req)
+	ck.Require().NoError(err, "Reconcile() error =")
 
 	if _, ok := r.postureStrikes[key]; ok {
 		t.Errorf("posture strikes entry for %s survived Reconcile on a missing Shard", key)
 	}
-	if _, ok := r.notConvergedSince[key]; ok {
-		t.Errorf("not-converged-since entry for %s survived Reconcile on a missing Shard", key)
-	}
+	_, ok := r.notConvergedSince[key]
+	ck.False(ok, "not-converged-since entry for %s survived Reconcile on a missing Shard", key)
 }
 
 // gateTestReconciler is postureTestReconciler plus a Pod status subresource,
@@ -370,20 +351,19 @@ func registeredReplica(
 ) topoclient.ComponentID {
 	t.Helper()
 	id := &clustermetadata.ID{Cell: cell, Name: name}
-	if err := store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
-		Id:       id,
-		Hostname: name,
-		ShardKey: &clustermetadata.ShardKey{
-			Database:   string(shard.Spec.DatabaseName),
-			TableGroup: string(shard.Spec.TableGroupName),
-			Shard:      string(shard.Spec.ShardName),
-		},
-		RoutingState: &clustermetadata.RoutingState{
-			Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
-		},
-	}, false); err != nil {
-		t.Fatalf("register pooler %s: %v", name, err)
-	}
+	assert.NewAborting(t).
+		NoError(store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
+			Id:       id,
+			Hostname: name,
+			ShardKey: &clustermetadata.ShardKey{
+				Database:   string(shard.Spec.DatabaseName),
+				TableGroup: string(shard.Spec.TableGroupName),
+				Shard:      string(shard.Spec.ShardName),
+			},
+			RoutingState: &clustermetadata.RoutingState{
+				Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
+			},
+		}, false), "register pooler %s", name)
 
 	componentID := topoclient.ComponentIDString(id)
 	rpc.SetStatusResponse(componentID, readyStatusResponse(id))
@@ -438,20 +418,19 @@ func notYetSettledReplica(
 ) *clustermetadata.ID {
 	t.Helper()
 	id := &clustermetadata.ID{Cell: cell, Name: name}
-	if err := store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
-		Id:       id,
-		Hostname: name,
-		ShardKey: &clustermetadata.ShardKey{
-			Database:   string(shard.Spec.DatabaseName),
-			TableGroup: string(shard.Spec.TableGroupName),
-			Shard:      string(shard.Spec.ShardName),
-		},
-		RoutingState: &clustermetadata.RoutingState{
-			Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
-		},
-	}, false); err != nil {
-		t.Fatalf("register pooler %s: %v", name, err)
-	}
+	assert.NewAborting(t).
+		NoError(store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
+			Id:       id,
+			Hostname: name,
+			ShardKey: &clustermetadata.ShardKey{
+				Database:   string(shard.Spec.DatabaseName),
+				TableGroup: string(shard.Spec.TableGroupName),
+				Shard:      string(shard.Spec.ShardName),
+			},
+			RoutingState: &clustermetadata.RoutingState{
+				Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
+			},
+		}, false), "register pooler %s", name)
 
 	componentID := topoclient.ComponentIDString(id)
 	rpc.SetStatusResponse(componentID, &multipoolermanagerdatapb.StatusResponse{
@@ -478,15 +457,14 @@ func notYetSettledReplica(
 // selector that forgets to scope to pool pods seeds it AwaitingRegistration
 // forever and this shard never returns 0.
 func TestReconcilePostureConvergedShardReturnsZero(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Labels[metadata.LabelMultigresDatabase] = "database"
 	shard.Labels[metadata.LabelMultigresTableGroup] = "table-group"
 	shard.Labels[metadata.LabelMultigresShard] = "0"
 
 	dep, err := BuildMultiorchDeployment(shard, "cell1", postureTestScheme(t))
-	if err != nil {
-		t.Fatalf("BuildMultiorchDeployment() error = %v", err)
-	}
+	c.Require().NoError(err, "BuildMultiorchDeployment() error =")
 	orch := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: "multiorch-abc", Namespace: shard.Namespace, Labels: dep.Spec.Template.Labels,
 	}}
@@ -501,19 +479,14 @@ func TestReconcilePostureConvergedShardReturnsZero(t *testing.T) {
 	r, _ := postureTestReconciler(t, shard, rpc, pool, orch)
 
 	delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("reconcilePosture() error = %v", err)
-	}
-	if delay != 0 {
-		t.Errorf("delay = %v, want 0 for a converged shard", delay)
-	}
+	c.Require().NoError(err, "reconcilePosture() error =")
+	c.Eq(0, delay, "delay")
 	key := fmt.Sprintf("%s/%s", shard.Namespace, shard.Name)
 	if _, ok := r.postureStrikes[key]; ok {
 		t.Errorf("posture strikes entry left for a converged shard")
 	}
-	if _, ok := r.notConvergedSince[key]; ok {
-		t.Errorf("not-converged-since entry left for a converged shard")
-	}
+	_, ok := r.notConvergedSince[key]
+	c.False(ok, "not-converged-since entry left for a converged shard")
 	if conditionIsFalse(shard.Status.Conditions, "PostureConsistent") {
 		t.Errorf("conditions = %#v, want no failure for a converged shard", shard.Status.Conditions)
 	}
@@ -526,6 +499,7 @@ func TestReconcilePostureConvergedShardReturnsZero(t *testing.T) {
 // failing pod has also never reached posture readiness, so this must keep
 // requesting a requeue rather than stranding it until the 10h resync.
 func TestReconcilePostureAcceptedIncompleteObservationStillRequeues(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	_, factory := memorytopo.NewServerAndFactory(t.Context(), "cell1")
 	store := topoclient.NewWithFactory(factory, "", []string{""}, topoclient.NewDefaultTopoConfig())
@@ -541,23 +515,19 @@ func TestReconcilePostureAcceptedIncompleteObservationStillRequeues(t *testing.T
 	r, _ := postureTestReconciler(t, shard, rpc, p0, p1)
 
 	first, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("first reconcilePosture() error = %v", err)
-	}
-	if first != postureDebounceRequeueDelay {
-		t.Errorf("first delay = %v, want the %v debounce", first, postureDebounceRequeueDelay)
-	}
+	c.Require().NoError(err, "first reconcilePosture() error =")
+	c.Eq(postureDebounceRequeueDelay, first, "first delay")
 
 	for pass := 2; pass <= 4; pass++ {
 		delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-		if err != nil {
-			t.Fatalf("pass %d reconcilePosture() error = %v", pass, err)
-		}
-		if delay <= 0 {
-			t.Errorf(
-				"pass %d: delay = %v, want non-zero (RPC failure still unresolved)", pass, delay,
-			)
-		}
+		c.Require().NoError(err, "pass %d reconcilePosture() error =", pass)
+		c.Greater(
+			0,
+			delay,
+			"pass %d: delay = %v, want non-zero (RPC failure still unresolved)",
+			pass,
+			delay,
+		)
 	}
 }
 
@@ -568,13 +538,14 @@ func TestReconcilePostureAcceptedIncompleteObservationStillRequeues(t *testing.T
 // threshold it is accepted as PostureConsistent=False, and this must keep
 // requesting a requeue.
 func TestReconcilePostureAcceptedMismatchAndNotReadyStillRequeues(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	_, factory := memorytopo.NewServerAndFactory(t.Context(), "cell1")
 	store := topoclient.NewWithFactory(factory, "", []string{""}, topoclient.NewDefaultTopoConfig())
 	defer func() { _ = store.Close() }()
 	rpc := rpcclient.NewFakeClient()
 	id := &clustermetadata.ID{Cell: "cell1", Name: "pooler-0"}
-	if err := store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
+	c.Require().NoError(store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
 		Id:       id,
 		Hostname: "pooler-0",
 		ShardKey: &clustermetadata.ShardKey{
@@ -585,9 +556,7 @@ func TestReconcilePostureAcceptedMismatchAndNotReadyStillRequeues(t *testing.T) 
 		RoutingState: &clustermetadata.RoutingState{
 			Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
 		},
-	}, false); err != nil {
-		t.Fatalf("register pooler: %v", err)
-	}
+	}, false), "register pooler")
 	componentID := topoclient.ComponentIDString(id)
 	rpc.SetStatusResponse(componentID, &multipoolermanagerdatapb.StatusResponse{
 		Status: &multipoolermanagerdatapb.Status{
@@ -597,21 +566,19 @@ func TestReconcilePostureAcceptedMismatchAndNotReadyStillRequeues(t *testing.T) 
 	r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 
 	first, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("first reconcilePosture() error = %v", err)
-	}
-	if first != postureDebounceRequeueDelay {
-		t.Errorf("first delay = %v, want the %v debounce", first, postureDebounceRequeueDelay)
-	}
+	c.Require().NoError(err, "first reconcilePosture() error =")
+	c.Eq(postureDebounceRequeueDelay, first, "first delay")
 
 	for pass := 2; pass <= 4; pass++ {
 		delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-		if err != nil {
-			t.Fatalf("pass %d reconcilePosture() error = %v", pass, err)
-		}
-		if delay <= 0 {
-			t.Errorf("pass %d: delay = %v, want non-zero (mismatch still unresolved)", pass, delay)
-		}
+		c.Require().NoError(err, "pass %d reconcilePosture() error =", pass)
+		c.Greater(
+			0,
+			delay,
+			"pass %d: delay = %v, want non-zero (mismatch still unresolved)",
+			pass,
+			delay,
+		)
 		if !conditionIsFalse(shard.Status.Conditions, "PostureConsistent") {
 			t.Errorf("pass %d: conditions = %#v, want PostureConsistent=False once accepted",
 				pass, shard.Status.Conditions)
@@ -629,6 +596,7 @@ func TestReconcilePostureAcceptedMismatchAndNotReadyStillRequeues(t *testing.T) 
 // who is primary must not be left Degraded until the 10h resync once that
 // disagreement is accepted into status.
 func TestReconcilePostureAcceptedMismatchWithReadyPodsStillRequeues(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	_, factory := memorytopo.NewServerAndFactory(t.Context(), "cell1")
 	store := topoclient.NewWithFactory(factory, "", []string{""}, topoclient.NewDefaultTopoConfig())
@@ -639,25 +607,19 @@ func TestReconcilePostureAcceptedMismatchWithReadyPodsStillRequeues(t *testing.T
 	r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 
 	first, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("first reconcilePosture() error = %v", err)
-	}
-	if first != postureDebounceRequeueDelay {
-		t.Errorf("first delay = %v, want the %v debounce", first, postureDebounceRequeueDelay)
-	}
+	c.Require().NoError(err, "first reconcilePosture() error =")
+	c.Eq(postureDebounceRequeueDelay, first, "first delay")
 
 	for pass := 2; pass <= 4; pass++ {
 		delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-		if err != nil {
-			t.Fatalf("pass %d reconcilePosture() error = %v", pass, err)
-		}
-		if delay <= 0 {
-			t.Errorf(
-				"pass %d: delay = %v, want non-zero (mismatch still unresolved, though the pod is ready)",
-				pass,
-				delay,
-			)
-		}
+		c.Require().NoError(err, "pass %d reconcilePosture() error =", pass)
+		c.Greater(
+			0,
+			delay,
+			"pass %d: delay = %v, want non-zero (mismatch still unresolved, though the pod is ready)",
+			pass,
+			delay,
+		)
 		if !conditionIsFalse(shard.Status.Conditions, "PostureConsistent") {
 			t.Errorf("pass %d: conditions = %#v, want PostureConsistent=False once accepted",
 				pass, shard.Status.Conditions)
@@ -675,6 +637,7 @@ func TestReconcilePostureAcceptedMismatchWithReadyPodsStillRequeues(t *testing.T
 // regardless of how many reconcile passes it took to get there, so a mutation
 // that turns the backoff back into a per-pass count cannot pass by chance.
 func TestReconcilePostureRequeuesWhileAPodAwaitsItsPooler(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	_, factory := memorytopo.NewServerAndFactory(t.Context(), "cell1")
 	store := topoclient.NewWithFactory(factory, "", []string{""}, topoclient.NewDefaultTopoConfig())
@@ -701,13 +664,16 @@ func TestReconcilePostureRequeuesWhileAPodAwaitsItsPooler(t *testing.T) {
 	} {
 		clk.advance(tc.advance)
 		delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-		if err != nil {
-			t.Fatalf("reconcilePosture() error = %v", err)
-		}
+		c.Require().NoError(err, "reconcilePosture() error =")
 		min, max := wantDelayRange(tc.elapsed)
-		if delay < min || delay > max {
-			t.Errorf("at elapsed=%v: delay = %v, want in [%v, %v]", tc.elapsed, delay, min, max)
-		}
+		c.False(
+			delay < min || delay > max,
+			"at elapsed=%v: delay = %v, want in [%v, %v]",
+			tc.elapsed,
+			delay,
+			min,
+			max,
+		)
 	}
 }
 
@@ -724,6 +690,7 @@ func TestReconcilePostureRequeuesWhileAPodAwaitsItsPooler(t *testing.T) {
 // fixture to a committed primary and checks the requeue stops, the gate goes
 // True, and the not-converged-since entry is gone.
 func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	_, factory := memorytopo.NewServerAndFactory(t.Context(), "cell1")
 	store := topoclient.NewWithFactory(factory, "", []string{""}, topoclient.NewDefaultTopoConfig())
@@ -751,20 +718,22 @@ func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
 	} {
 		clk.advance(tc.advance)
 		delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-		if err != nil {
-			t.Fatalf("reconcilePosture() error = %v", err)
-		}
+		ck.Require().NoError(err, "reconcilePosture() error =")
 		min, max := wantDelayRange(tc.elapsed)
-		if delay < min || delay > max {
-			t.Errorf("at elapsed=%v: delay = %v, want in [%v, %v]", tc.elapsed, delay, min, max)
-		}
+		ck.False(
+			delay < min || delay > max,
+			"at elapsed=%v: delay = %v, want in [%v, %v]",
+			tc.elapsed,
+			delay,
+			min,
+			max,
+		)
 	}
 
 	for _, pod := range []*corev1.Pod{pod0, pod1} {
 		got := &corev1.Pod{}
-		if err := c.Get(t.Context(), client.ObjectKeyFromObject(pod), got); err != nil {
-			t.Fatalf("get pod %s: %v", pod.Name, err)
-		}
+		ck.Require().
+			NoError(c.Get(t.Context(), client.ObjectKeyFromObject(pod), got), "get pod %s", pod.Name)
 		condition := readinessCondition(got.Status.Conditions)
 		if condition == nil || condition.Status != corev1.ConditionFalse {
 			t.Errorf("pod %s readiness condition = %#v, want False while waiting for a primary",
@@ -776,7 +745,7 @@ func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
 	// pooler-0 as leader, so both are cohort-eligible members of the same
 	// durability rule and pooler-0's postgres reports PRIMARY, matching the
 	// topology role a leader-designate needs.
-	if err := store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
+	ck.Require().NoError(store.RegisterMultipooler(t.Context(), &clustermetadata.Multipooler{
 		Id:       id0,
 		Hostname: "pooler-0",
 		ShardKey: &clustermetadata.ShardKey{
@@ -787,9 +756,7 @@ func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
 		RoutingState: &clustermetadata.RoutingState{
 			Role: clustermetadata.RoutingRole_ROUTING_ROLE_PRIMARY,
 		},
-	}, true); err != nil {
-		t.Fatalf("promote pooler-0 in topology: %v", err)
-	}
+	}, true), "promote pooler-0 in topology")
 	rule := &clustermetadata.ShardRule{
 		RuleNumber:       &clustermetadata.RuleNumber{CoordinatorTerm: 1},
 		LeaderId:         id0,
@@ -827,16 +794,11 @@ func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
 
 	clk.advance(time.Second)
 	delay, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("reconcilePosture() after election error = %v", err)
-	}
-	if delay != 0 {
-		t.Errorf("delay after a primary is elected = %v, want 0", delay)
-	}
+	ck.Require().NoError(err, "reconcilePosture() after election error =")
+	ck.Eq(0, delay, "delay after a primary is elected")
 	key := fmt.Sprintf("%s/%s", shard.Namespace, shard.Name)
-	if _, ok := r.notConvergedSince[key]; ok {
-		t.Errorf("not-converged-since entry left after a primary is elected")
-	}
+	_, ok := r.notConvergedSince[key]
+	ck.False(ok, "not-converged-since entry left after a primary is elected")
 	if conditionIsFalse(shard.Status.Conditions, "PostureConsistent") {
 		t.Errorf(
 			"conditions = %#v, want no failure once a primary is elected",
@@ -846,9 +808,8 @@ func TestReconcilePostureBacksOffThenClearsOnceAPrimaryIsElected(t *testing.T) {
 
 	for _, pod := range []*corev1.Pod{pod0, pod1} {
 		got := &corev1.Pod{}
-		if err := c.Get(t.Context(), client.ObjectKeyFromObject(pod), got); err != nil {
-			t.Fatalf("get pod %s: %v", pod.Name, err)
-		}
+		ck.Require().
+			NoError(c.Get(t.Context(), client.ObjectKeyFromObject(pod), got), "get pod %s", pod.Name)
 		condition := readinessCondition(got.Status.Conditions)
 		if condition == nil || condition.Status != corev1.ConditionTrue {
 			t.Errorf("pod %s readiness condition = %#v, want True once a primary is elected",

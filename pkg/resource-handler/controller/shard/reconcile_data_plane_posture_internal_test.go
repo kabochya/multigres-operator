@@ -27,6 +27,8 @@ import (
 	"github.com/multigres/multigres-operator/pkg/data-handler/poolerclient"
 	"github.com/multigres/multigres-operator/pkg/data-handler/posture"
 	"github.com/multigres/multigres-operator/pkg/util/metadata"
+
+	"github.com/multigres/testkit/assert"
 )
 
 type countingPoolerResolver struct {
@@ -58,16 +60,11 @@ func (r *countingPoolerResolver) ClientFor(
 
 func postureTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
+	c := assert.NewAborting(t)
 	scheme := runtime.NewScheme()
-	if err := multigresv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("add shard scheme: %v", err)
-	}
-	if err := appsv1.AddToScheme(scheme); err != nil {
-		t.Fatalf("add apps scheme: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("add core scheme: %v", err)
-	}
+	c.NoError(multigresv1alpha1.AddToScheme(scheme), "add shard scheme")
+	c.NoError(appsv1.AddToScheme(scheme), "add apps scheme")
+	c.NoError(corev1.AddToScheme(scheme), "add core scheme")
 	return scheme
 }
 
@@ -139,24 +136,24 @@ func postureTestStore(t *testing.T) (topoclient.Store, topoclient.ComponentID) {
 		factory, "", []string{""}, topoclient.NewDefaultTopoConfig(),
 	)
 	id := &clustermetadata.ID{Cell: "cell1", Name: "pooler-0"}
-	if err := store.RegisterMultipooler(context.Background(), &clustermetadata.Multipooler{
-		Id:       id,
-		Hostname: "pooler-0",
-		ShardKey: &clustermetadata.ShardKey{
-			Database:   "database",
-			TableGroup: "table-group",
-			Shard:      "0",
-		},
-		RoutingState: &clustermetadata.RoutingState{
-			Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
-		},
-	}, false); err != nil {
-		t.Fatalf("register pooler: %v", err)
-	}
+	assert.NewAborting(t).
+		NoError(store.RegisterMultipooler(context.Background(), &clustermetadata.Multipooler{
+			Id:       id,
+			Hostname: "pooler-0",
+			ShardKey: &clustermetadata.ShardKey{
+				Database:   "database",
+				TableGroup: "table-group",
+				Shard:      "0",
+			},
+			RoutingState: &clustermetadata.RoutingState{
+				Role: clustermetadata.RoutingRole_ROUTING_ROLE_REPLICA,
+			},
+		}, false), "register pooler")
 	return store, topoclient.ComponentIDString(id)
 }
 
 func TestUpdateStatusPublishesPostureFailureAndPhaseTogether(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Status.PodPostures = map[string]string{"pooler-0": "PRIMARY"}
 	shard.Status.Conditions = []metav1.Condition{{
@@ -168,20 +165,19 @@ func TestUpdateStatusPublishesPostureFailureAndPhaseTogether(t *testing.T) {
 	}}
 	r, c := postureTestReconciler(t, shard, nil)
 
-	if err := r.updateStatus(t.Context(), shard, renderedConfig{}); err != nil {
-		t.Fatalf("updateStatus() error = %v", err)
-	}
+	ck.Require().
+		NoError(r.updateStatus(t.Context(), shard, renderedConfig{}), "updateStatus() error =")
 
 	got := &multigresv1alpha1.Shard{}
-	if err := c.Get(t.Context(), client.ObjectKeyFromObject(shard), got); err != nil {
-		t.Fatalf("get updated shard: %v", err)
-	}
-	if got.Status.Phase != multigresv1alpha1.PhaseDegraded {
-		t.Errorf("phase = %q, want %q", got.Status.Phase, multigresv1alpha1.PhaseDegraded)
-	}
-	if got.Status.PodPostures["pooler-0"] != "PRIMARY" {
-		t.Errorf("podPostures = %v, want pooler-0 PRIMARY", got.Status.PodPostures)
-	}
+	ck.Require().
+		NoError(c.Get(t.Context(), client.ObjectKeyFromObject(shard), got), "get updated shard")
+	ck.Eq(multigresv1alpha1.PhaseDegraded, got.Status.Phase, "phase")
+	ck.Eq(
+		"PRIMARY",
+		got.Status.PodPostures["pooler-0"],
+		"podPostures = %v, want pooler-0 PRIMARY",
+		got.Status.PodPostures,
+	)
 	postureFailurePersisted := false
 	for _, condition := range got.Status.Conditions {
 		if condition.Type == posture.ConditionConsistent &&
@@ -196,6 +192,7 @@ func TestUpdateStatusPublishesPostureFailureAndPhaseTogether(t *testing.T) {
 }
 
 func TestUpdateStatusKeepsIncompletePostureOutOfHealthy(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Status.Conditions = []metav1.Condition{{
 		Type:               posture.ConditionConsistent,
@@ -206,15 +203,13 @@ func TestUpdateStatusKeepsIncompletePostureOutOfHealthy(t *testing.T) {
 	}}
 	r, _ := postureTestReconciler(t, shard, nil)
 
-	if err := r.updateStatus(t.Context(), shard, renderedConfig{}); err != nil {
-		t.Fatalf("updateStatus() error = %v", err)
-	}
-	if shard.Status.Phase != multigresv1alpha1.PhaseProgressing {
-		t.Errorf("phase = %q, want %q", shard.Status.Phase, multigresv1alpha1.PhaseProgressing)
-	}
+	c.Require().
+		NoError(r.updateStatus(t.Context(), shard, renderedConfig{}), "updateStatus() error =")
+	c.Eq(multigresv1alpha1.PhaseProgressing, shard.Status.Phase, "phase")
 }
 
 func TestReconcilePostureDebouncesFirstInconsistency(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	store, poolerID := postureTestStore(t)
 	defer func() { _ = store.Close() }()
@@ -228,36 +223,34 @@ func TestReconcilePostureDebouncesFirstInconsistency(t *testing.T) {
 	r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 
 	retryAfter, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("first reconcilePosture() error = %v", err)
-	}
-	if retryAfter != postureDebounceRequeueDelay {
-		t.Error("first inconsistent posture observation did not request a requeue")
-	}
-	if got := withDataPlaneRequeue(
+	c.Require().NoError(err, "first reconcilePosture() error =")
+	c.Eq(
+		postureDebounceRequeueDelay,
+		retryAfter,
+		"first inconsistent posture observation did not request a requeue",
+	)
+	c.Eq(postureDebounceRequeueDelay, withDataPlaneRequeue(
 		ctrl.Result{},
 		retryAfter,
 		false,
-	).RequeueAfter; got != postureDebounceRequeueDelay {
-		t.Errorf("first requeue delay = %v, want %v", got, postureDebounceRequeueDelay)
-	}
+	).RequeueAfter, "first requeue delay")
 	if conditionIsFalse(shard.Status.Conditions, posture.ConditionConsistent) {
 		t.Errorf("conditions = %#v, want no failure on first observation", shard.Status.Conditions)
 	}
 
 	retryAfter, err = r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("second reconcilePosture() error = %v", err)
-	}
+	c.Require().NoError(err, "second reconcilePosture() error =")
 	// The mismatch is now accepted into status (PostureConsistent=False), but
 	// this mock pooler never reports IsInitialized/PostgresReady, so it has
 	// also never reached posture readiness. An accepted-but-not-ready shard
 	// must keep requesting a requeue: nothing but this controller's own
 	// backoff will ever look again, since neither a status recovery in
 	// topology nor a role fix changes a Kubernetes object.
-	if retryAfter <= 0 {
-		t.Error("second inconsistent posture observation (still not ready) requested no requeue")
-	}
+	c.Greater(
+		0,
+		retryAfter,
+		"second inconsistent posture observation (still not ready) requested no requeue",
+	)
 	if !conditionIsFalse(shard.Status.Conditions, posture.ConditionConsistent) {
 		t.Errorf(
 			"conditions = %#v, want posture failure on second observation",
@@ -267,6 +260,7 @@ func TestReconcilePostureDebouncesFirstInconsistency(t *testing.T) {
 }
 
 func TestReconcilePostureDebouncesFirstIncompleteObservation(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Status.Conditions = []metav1.Condition{{
 		Type:               posture.ConditionConsistent,
@@ -283,19 +277,17 @@ func TestReconcilePostureDebouncesFirstIncompleteObservation(t *testing.T) {
 	r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 
 	retryAfter, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("first reconcilePosture() error = %v", err)
-	}
-	if retryAfter != postureDebounceRequeueDelay {
-		t.Error("first incomplete posture observation did not request a requeue")
-	}
-	if got := withDataPlaneRequeue(
+	c.Require().NoError(err, "first reconcilePosture() error =")
+	c.Eq(
+		postureDebounceRequeueDelay,
+		retryAfter,
+		"first incomplete posture observation did not request a requeue",
+	)
+	c.Eq(postureDebounceRequeueDelay, withDataPlaneRequeue(
 		ctrl.Result{},
 		retryAfter,
 		false,
-	).RequeueAfter; got != postureDebounceRequeueDelay {
-		t.Errorf("first requeue delay = %v, want %v", got, postureDebounceRequeueDelay)
-	}
+	).RequeueAfter, "first requeue delay")
 	if !conditionIsTrue(shard.Status.Conditions, posture.ConditionConsistent) {
 		t.Errorf(
 			"conditions = %#v, want prior consistent condition preserved on first blip",
@@ -304,30 +296,26 @@ func TestReconcilePostureDebouncesFirstIncompleteObservation(t *testing.T) {
 	}
 
 	retryAfter, err = r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("second reconcilePosture() error = %v", err)
-	}
+	c.Require().NoError(err, "second reconcilePosture() error =")
 	// Accepted into status (Unknown/ObservationIncomplete), but a pooler whose
 	// Status RPC errors has also never reached posture readiness, so this must
 	// still requeue rather than strand the pod until the 10h resync.
-	if retryAfter <= 0 {
-		t.Error("second incomplete posture observation (still not ready) requested no requeue")
-	}
+	c.Greater(
+		0,
+		retryAfter,
+		"second incomplete posture observation (still not ready) requested no requeue",
+	)
 	for _, condition := range shard.Status.Conditions {
 		if condition.Type != posture.ConditionConsistent {
 			continue
 		}
-		if condition.Status != metav1.ConditionUnknown ||
-			condition.Reason != "ObservationIncomplete" {
-			t.Errorf(
-				"condition = %#v, want Unknown/ObservationIncomplete on second blip",
-				condition,
-			)
-		}
+		c.False(condition.Status != metav1.ConditionUnknown ||
+			condition.Reason != "ObservationIncomplete", "condition = %#v, want Unknown/ObservationIncomplete on second blip", condition)
 	}
 }
 
 func TestReconcileDataPlaneRequeuesFirstPostureStrike(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	store, poolerID := postureTestStore(t)
 	pod := postureTestPod()
@@ -356,21 +344,16 @@ func TestReconcileDataPlaneRequeuesFirstPostureStrike(t *testing.T) {
 		restartHash: "restart",
 		reloadHash:  "reload",
 	})
-	if err != nil {
-		t.Fatalf("reconcileDataPlane() error = %v", err)
-	}
-	if result.RequeueAfter != postureDebounceRequeueDelay {
-		t.Errorf("requeue delay = %v, want %v", result.RequeueAfter, postureDebounceRequeueDelay)
-	}
+	c.Require().NoError(err, "reconcileDataPlane() error =")
+	c.Eq(postureDebounceRequeueDelay, result.RequeueAfter, "requeue delay")
 	if !callLogHas(rpc.GetCallLog(), "ReloadConfig") {
 		t.Errorf("reload phase did not run, call log = %v", rpc.GetCallLog())
 	}
-	if resolver.calls != 1 {
-		t.Errorf("ClientFor calls = %d, want exactly 1 per reconcile", resolver.calls)
-	}
+	c.Eq(1, resolver.calls, "ClientFor calls")
 }
 
 func TestReconcileDataPlaneContinuesWithoutPoolerClient(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	lastBackup := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
 	shard.Status.LastBackupTime = &lastBackup
@@ -406,57 +389,36 @@ func TestReconcileDataPlaneContinuesWithoutPoolerClient(t *testing.T) {
 	}
 
 	result, err := r.reconcileDataPlane(t.Context(), shard, renderedConfig{})
-	if err != nil {
-		t.Fatalf("reconcileDataPlane() error = %v", err)
-	}
-	if result.RequeueAfter != poolerClientRetryDelay {
-		t.Errorf("requeue delay = %v, want %v", result.RequeueAfter, poolerClientRetryDelay)
-	}
-	if resolver.calls != 1 {
-		t.Errorf("ClientFor calls = %d, want 1", resolver.calls)
-	}
+	ck.Require().NoError(err, "reconcileDataPlane() error =")
+	ck.Eq(poolerClientRetryDelay, result.RequeueAfter, "requeue delay")
+	ck.Eq(1, resolver.calls, "ClientFor calls")
 
 	got := &multigresv1alpha1.Shard{}
-	if err := c.Get(t.Context(), client.ObjectKeyFromObject(shard), got); err != nil {
-		t.Fatalf("get updated shard: %v", err)
-	}
-	if got.Status.PodRoles["pooler-0"] != "REPLICA" {
-		t.Errorf("podRoles = %v, want topology-derived pooler-0 REPLICA", got.Status.PodRoles)
-	}
-	if got.Status.Phase != multigresv1alpha1.PhaseProgressing {
-		t.Errorf("phase = %q, want %q", got.Status.Phase, multigresv1alpha1.PhaseProgressing)
-	}
+	ck.Require().
+		NoError(c.Get(t.Context(), client.ObjectKeyFromObject(shard), got), "get updated shard")
+	ck.Eq(
+		"REPLICA",
+		got.Status.PodRoles["pooler-0"],
+		"podRoles = %v, want topology-derived pooler-0 REPLICA",
+		got.Status.PodRoles,
+	)
+	ck.Eq(multigresv1alpha1.PhaseProgressing, got.Status.Phase, "phase")
 	postureCondition := findPostureCondition(
 		got.Status.Conditions,
 		posture.ConditionConsistent,
 	)
-	if postureCondition == nil {
-		t.Fatalf(
-			"conditions = %#v, want %s condition",
-			got.Status.Conditions,
-			posture.ConditionConsistent,
-		)
-	}
-	if postureCondition.Status != metav1.ConditionUnknown ||
+	ck.Require().
+		NotNil(postureCondition, "conditions = %#v, want %s condition", got.Status.Conditions, posture.ConditionConsistent)
+	ck.False(postureCondition.Status != metav1.ConditionUnknown ||
 		postureCondition.Reason != "PoolerClientUnavailable" ||
-		!strings.Contains(postureCondition.Message, "certificate not issued") {
-		t.Errorf(
-			"condition = %#v, want Unknown/PoolerClientUnavailable with resolver error",
-			postureCondition,
-		)
-	}
-	if calls := rpc.GetCallLog(); len(calls) != 0 {
-		t.Errorf("RPC phases ran with resolver error, call log = %v", calls)
-	}
+		!strings.Contains(
+			postureCondition.Message,
+			"certificate not issued",
+		), "condition = %#v, want Unknown/PoolerClientUnavailable with resolver error", postureCondition)
+	ck.Empty(rpc.GetCallLog(), "RPC phases ran with resolver error, call log =")
 	backupCondition := findPostureCondition(got.Status.Conditions, backuphealth.ConditionHealthy)
-	if backupCondition == nil || backupCondition.Status != metav1.ConditionUnknown ||
-		backupCondition.Reason != reasonBackupCheckUnavailable {
-		t.Errorf(
-			"backup condition = %#v, want Unknown/%s",
-			backupCondition,
-			reasonBackupCheckUnavailable,
-		)
-	}
+	ck.False(backupCondition == nil || backupCondition.Status != metav1.ConditionUnknown ||
+		backupCondition.Reason != reasonBackupCheckUnavailable, "backup condition = %#v, want Unknown/%s", backupCondition, reasonBackupCheckUnavailable)
 	if got.Status.LastBackupTime == nil || !got.Status.LastBackupTime.Equal(&lastBackup) ||
 		got.Status.LastBackupType != "full" {
 		t.Errorf(
@@ -467,9 +429,10 @@ func TestReconcileDataPlaneContinuesWithoutPoolerClient(t *testing.T) {
 	}
 
 	recorder := r.Recorder.(*record.FakeRecorder)
-	if !containsEventWithReason(drainEvents(recorder), "PoolerClientUnavailable") {
-		t.Error("expected PoolerClientUnavailable event")
-	}
+	ck.True(
+		containsEventWithReason(drainEvents(recorder), "PoolerClientUnavailable"),
+		"expected PoolerClientUnavailable event",
+	)
 
 	secondStore, _ := postureTestStore(t)
 	r.CreateTopoStore = func(*multigresv1alpha1.Shard) (topoclient.Store, error) {
@@ -478,12 +441,12 @@ func TestReconcileDataPlaneContinuesWithoutPoolerClient(t *testing.T) {
 	if _, err := r.reconcileDataPlane(t.Context(), got, renderedConfig{}); err != nil {
 		t.Fatalf("second reconcileDataPlane() error = %v", err)
 	}
-	if events := drainEvents(recorder); containsEventWithReason(events, "PoolerClientUnavailable") {
-		t.Errorf(
-			"repeated resolver failure re-emitted PoolerClientUnavailable, events = %v",
-			events,
-		)
-	}
+	events := drainEvents(recorder)
+	ck.False(
+		containsEventWithReason(events, "PoolerClientUnavailable"),
+		"repeated resolver failure re-emitted PoolerClientUnavailable, events = %v",
+		events,
+	)
 }
 
 func TestSetBackupUnknownPreservesConfirmedFailure(t *testing.T) {
@@ -496,13 +459,12 @@ func TestSetBackupUnknownPreservesConfirmedFailure(t *testing.T) {
 	}}
 	setBackupUnknownUnlessFalse(shard, "RPC unavailable")
 	condition := findPostureCondition(shard.Status.Conditions, backuphealth.ConditionHealthy)
-	if condition == nil || condition.Status != metav1.ConditionFalse ||
-		condition.Reason != "BackupStale" {
-		t.Errorf("backup condition = %#v, want preserved False/BackupStale", condition)
-	}
+	assert.NewCollecting(t).False(condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "BackupStale", "backup condition = %#v, want preserved False/BackupStale", condition)
 }
 
 func TestReconcileDataPlaneResolverFailurePreservesConfirmedPostureFailure(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Status.Conditions = []metav1.Condition{{
 		Type:               posture.ConditionConsistent,
@@ -525,36 +487,24 @@ func TestReconcileDataPlaneResolverFailurePreservesConfirmedPostureFailure(t *te
 
 	// Simulate one unsettled observation immediately before the transport
 	// outage. Resolver failure must break that sequence.
-	if strikes := r.recordPostureObservation(shard, true); strikes != 1 {
-		t.Fatalf("initial strikes = %d, want 1", strikes)
-	}
+	ck.Require().Eq(1, r.recordPostureObservation(shard, true), "initial strikes")
 
 	result, err := r.reconcileDataPlane(t.Context(), shard, renderedConfig{})
-	if err != nil {
-		t.Fatalf("reconcileDataPlane() error = %v", err)
-	}
-	if result.RequeueAfter != poolerClientRetryDelay {
-		t.Errorf("requeue delay = %v, want %v", result.RequeueAfter, poolerClientRetryDelay)
-	}
+	ck.Require().NoError(err, "reconcileDataPlane() error =")
+	ck.Eq(poolerClientRetryDelay, result.RequeueAfter, "requeue delay")
 
 	got := &multigresv1alpha1.Shard{}
-	if err := c.Get(t.Context(), client.ObjectKeyFromObject(shard), got); err != nil {
-		t.Fatalf("get updated shard: %v", err)
-	}
+	ck.Require().
+		NoError(c.Get(t.Context(), client.ObjectKeyFromObject(shard), got), "get updated shard")
 	condition := findPostureCondition(got.Status.Conditions, posture.ConditionConsistent)
-	if condition == nil || condition.Status != metav1.ConditionFalse ||
-		condition.Reason != "MultiplePrimaries" {
-		t.Errorf("condition = %#v, want preserved False/MultiplePrimaries", condition)
-	}
-	if got.Status.Phase != multigresv1alpha1.PhaseDegraded {
-		t.Errorf("phase = %q, want %q", got.Status.Phase, multigresv1alpha1.PhaseDegraded)
-	}
-	if strikes := r.recordPostureObservation(shard, true); strikes != 1 {
-		t.Errorf("first post-outage strikes = %d, want 1", strikes)
-	}
+	ck.False(condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "MultiplePrimaries", "condition = %#v, want preserved False/MultiplePrimaries", condition)
+	ck.Eq(multigresv1alpha1.PhaseDegraded, got.Status.Phase, "phase")
+	ck.Eq(1, r.recordPostureObservation(shard, true), "first post-outage strikes")
 }
 
 func TestReconcileDataPlaneMarksBackupUnknownOnRPCFailure(t *testing.T) {
+	ck := assert.NewCollecting(t)
 	shard := postureTestShard()
 	lastBackup := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
 	shard.Status.LastBackupTime = &lastBackup
@@ -596,18 +546,14 @@ func TestReconcileDataPlaneMarksBackupUnknownOnRPCFailure(t *testing.T) {
 		return store, nil
 	}
 
-	if _, err := r.reconcileDataPlane(t.Context(), shard, renderedConfig{}); err != nil {
-		t.Fatalf("reconcileDataPlane() error = %v", err)
-	}
+	_, err := r.reconcileDataPlane(t.Context(), shard, renderedConfig{})
+	assert.NewAborting(t).NoError(err, "reconcileDataPlane() error =")
 	got := &multigresv1alpha1.Shard{}
-	if err := c.Get(t.Context(), client.ObjectKeyFromObject(shard), got); err != nil {
-		t.Fatalf("get updated shard: %v", err)
-	}
+	ck.Require().
+		NoError(c.Get(t.Context(), client.ObjectKeyFromObject(shard), got), "get updated shard")
 	condition := findPostureCondition(got.Status.Conditions, backuphealth.ConditionHealthy)
-	if condition == nil || condition.Status != metav1.ConditionUnknown ||
-		condition.Reason != reasonBackupCheckUnavailable {
-		t.Errorf("backup condition = %#v, want Unknown/%s", condition, reasonBackupCheckUnavailable)
-	}
+	ck.False(condition == nil || condition.Status != metav1.ConditionUnknown ||
+		condition.Reason != reasonBackupCheckUnavailable, "backup condition = %#v, want Unknown/%s", condition, reasonBackupCheckUnavailable)
 	if got.Status.LastBackupTime == nil || !got.Status.LastBackupTime.Equal(&lastBackup) ||
 		got.Status.LastBackupType != "full" {
 		t.Errorf(
@@ -633,6 +579,7 @@ func TestReconcilePostureClearsStaleUnknownReasonDuringDebounce(t *testing.T) {
 		reasonAwaitingPoolerRegistration,
 	} {
 		t.Run(previousReason, func(t *testing.T) {
+			c := assert.NewCollecting(t)
 			shard := postureTestShard()
 			shard.Status.Conditions = []metav1.Condition{{
 				Type:               posture.ConditionConsistent,
@@ -644,22 +591,18 @@ func TestReconcilePostureClearsStaleUnknownReasonDuringDebounce(t *testing.T) {
 			r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 
 			retryAfter, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-			if err != nil {
-				t.Fatalf("reconcilePosture() error = %v", err)
-			}
-			if retryAfter != postureDebounceRequeueDelay {
-				t.Fatal("first recovered unsettled observation did not request debounce requeue")
-			}
+			c.Require().NoError(err, "reconcilePosture() error =")
+			c.Require().
+				Eq(postureDebounceRequeueDelay, retryAfter, "first recovered unsettled observation did not request debounce requeue")
 			condition := findPostureCondition(shard.Status.Conditions, posture.ConditionConsistent)
-			if condition == nil || condition.Status != metav1.ConditionUnknown ||
-				condition.Reason != reasonObservationPending {
-				t.Errorf("condition = %#v, want Unknown/ObservationPending", condition)
-			}
+			c.False(condition == nil || condition.Status != metav1.ConditionUnknown ||
+				condition.Reason != reasonObservationPending, "condition = %#v, want Unknown/ObservationPending", condition)
 		})
 	}
 }
 
 func TestReconcilePostureRequeuesWhileTopologyHasNoPoolers(t *testing.T) {
+	c := assert.NewCollecting(t)
 	shard := postureTestShard()
 	shard.Status.Conditions = []metav1.Condition{{
 		Type:               posture.ConditionConsistent,
@@ -680,17 +623,12 @@ func TestReconcilePostureRequeuesWhileTopologyHasNoPoolers(t *testing.T) {
 	rpc := rpcclient.NewFakeClient()
 	r, _ := postureTestReconciler(t, shard, rpc, postureTestPod())
 	retryAfter, err := r.reconcilePosture(t.Context(), store, shard, rpc)
-	if err != nil {
-		t.Fatalf("reconcilePosture() error = %v", err)
-	}
-	if retryAfter != poolerRegistrationRetryDelay {
-		t.Fatal("empty topology did not request a bootstrap requeue")
-	}
+	c.Require().NoError(err, "reconcilePosture() error =")
+	c.Require().
+		Eq(poolerRegistrationRetryDelay, retryAfter, "empty topology did not request a bootstrap requeue")
 	condition := findPostureCondition(shard.Status.Conditions, posture.ConditionConsistent)
-	if condition == nil || condition.Status != metav1.ConditionUnknown ||
-		condition.Reason != "AwaitingPoolerRegistration" {
-		t.Errorf("condition = %#v, want Unknown/AwaitingPoolerRegistration", condition)
-	}
+	c.False(condition == nil || condition.Status != metav1.ConditionUnknown ||
+		condition.Reason != "AwaitingPoolerRegistration", "condition = %#v, want Unknown/AwaitingPoolerRegistration", condition)
 }
 
 func TestWithDataPlaneRequeueUsesEarliestDelay(t *testing.T) {
@@ -727,9 +665,7 @@ func TestWithDataPlaneRequeueUsesEarliestDelay(t *testing.T) {
 				tt.postureRetryAfter,
 				tt.poolerClientUnavailable,
 			)
-			if result.RequeueAfter != tt.want {
-				t.Errorf("requeue delay = %v, want %v", result.RequeueAfter, tt.want)
-			}
+			assert.NewCollecting(t).Eq(tt.want, result.RequeueAfter, "requeue delay")
 		})
 	}
 }

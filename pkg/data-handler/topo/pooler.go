@@ -194,7 +194,8 @@ func PoolerRoutingRole(mp *clustermetadatapb.Multipooler) clustermetadatapb.Rout
 // IsPrimaryPooler reports whether the pooler advertises the writable primary
 // routing role.
 func IsPrimaryPooler(mp *clustermetadatapb.Multipooler) bool {
-	return PoolerRoutingRole(mp) == clustermetadatapb.RoutingRole_ROUTING_ROLE_PRIMARY
+	return mp.GetManagementMode() != clustermetadatapb.PoolerManagementMode_POOLER_MANAGEMENT_MODE_UNMANAGED &&
+		PoolerRoutingRole(mp) == clustermetadatapb.RoutingRole_ROUTING_ROLE_PRIMARY
 }
 
 // CollectCells returns the sorted, deduplicated set of cell names from the shard's pools.
@@ -266,6 +267,11 @@ func MarkDeadPoolers(
 		}
 
 		for _, p := range poolers {
+			// Source entries remain in the complete migration fence set until
+			// their own lifecycle path proves the old process has stopped.
+			if p.GetManagementMode() == clustermetadatapb.PoolerManagementMode_POOLER_MANAGEMENT_MODE_UNMANAGED {
+				continue
+			}
 			if poolerMatchesAnyActivePod(p, activePodNames) {
 				continue
 			}

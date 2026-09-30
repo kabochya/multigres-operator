@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/multigres/multigres/go/common/topoclient"
+	pb "github.com/multigres/multigres/go/pb/clustermetadata"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -79,6 +80,8 @@ type ShardReconciler struct {
 	APIReader       client.Reader
 	PoolerClients   poolerclient.Resolver
 	CreateTopoStore func(*multigresv1alpha1.Shard) (topoclient.Store, error)
+	// ReadMigrationRouting is a test seam; production reads current managed authority.
+	ReadMigrationRouting func(context.Context, *multigresv1alpha1.Shard) (*pb.MigrationRouting, error)
 
 	postureStrikesMu sync.Mutex
 	postureStrikes   map[string]int
@@ -119,6 +122,9 @@ func (r *ShardReconciler) Reconcile(
 	// Finalizer gates deletion so PVCs can be detached + labelled orphan
 	// before Kubernetes cascade-GC fires.
 	if !shard.DeletionTimestamp.IsZero() {
+		if pending, err := r.reconcileUnmanagedPoolers(ctx, shard, true); err != nil || pending {
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+		}
 		return r.handleDeletion(ctx, shard)
 	}
 	if !slices.Contains(shard.Finalizers, shardFinalizer) {
@@ -134,7 +140,13 @@ func (r *ShardReconciler) Reconcile(
 	// spec. The shard controller drains all pods and sets ReadyForDeletion
 	// condition, at which point the TableGroup controller calls Delete.
 	if shard.Annotations[multigresv1alpha1.AnnotationPendingDeletion] != "" {
+		if pending, err := r.reconcileUnmanagedPoolers(ctx, shard, true); err != nil || pending {
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+		}
 		return r.handlePendingDeletion(ctx, shard)
+	}
+	if _, err := r.reconcileUnmanagedPoolers(ctx, shard, false); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Render the effective postgresql.conf once per reconcile. Both the status

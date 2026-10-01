@@ -123,6 +123,16 @@ type PoolSpec struct {
 
 // ShardSpec defines the desired state of Shard.
 type ShardSpec struct {
+	// UnmanagedPoolers provisions source proxies independently of managed pools.
+	// This field is owned by the migration operator, not the parent TableGroup.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=1
+	UnmanagedPoolers map[string]UnmanagedPoolerSpec `json:"unmanagedPoolers,omitempty"`
+
+	// MigrationKeySecretRef contains the 32-byte catalog encryption key. Mounts
+	// into managed and source poolers only; gateways receive a derived token.
+	// +optional
+	MigrationKeySecretRef *corev1.SecretKeySelector `json:"migrationKeySecretRef,omitempty"`
 	// DatabaseName is the name of the logical database this shard belongs to.
 	DatabaseName DatabaseName `json:"databaseName"`
 
@@ -227,6 +237,33 @@ type ShardSpec struct {
 	// It is automatically populated by the cluster-handler based on the sum of ReplicasPerCell.
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+}
+
+// UnmanagedPoolerSpec configures pooler-only pods for one external connection.
+// Endpoint credentials stay in the encrypted target catalog, never in this CR.
+type UnmanagedPoolerSpec struct {
+	// ConnectionName names a connection created through serving control SQL.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	ConnectionName string `json:"connectionName"`
+	// Cells must already exist in the cluster topology.
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=10
+	Cells []CellName `json:"cells"`
+	// ReplicasPerCell defaults to one. Pods never restart a process with the same identity.
+	// +optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=8
+	ReplicasPerCell int32 `json:"replicasPerCell,omitempty"`
+	// ConnectionBudget caps application pools across all cells. Two extra admin
+	// connections per process are reserved separately; account for these on the source.
+	// +kubebuilder:validation:Minimum=4
+	ConnectionBudget int32 `json:"connectionBudget"`
+	// Multipooler configures resources and container security context.
+	// +optional
+	Multipooler ContainerConfig `json:"multipooler,omitempty"`
 }
 
 // ShardImages defines the images required for a Shard.

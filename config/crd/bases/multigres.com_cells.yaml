@@ -1442,6 +1442,32 @@ spec:
                 maxLength: 63
                 minLength: 1
                 type: string
+              servingControlTokenSecretRef:
+                description: |-
+                  ServingControlTokenSecretRef holds SHA256(migration key), encoded as 64 hex
+                  characters. Gateways cannot decrypt the source credential catalog with it.
+                  Owned independently of the parent cluster during migration provisioning.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
               topoServer:
                 description: TopoServer defines the local topology config.
                 properties:

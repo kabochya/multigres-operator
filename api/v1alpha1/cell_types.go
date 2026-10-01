@@ -115,6 +115,11 @@ type GatewayBufferConfig struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.zoneId) && has(self.region))",message="cannot specify both 'zoneId' and 'region'"
 // +kubebuilder:validation:XValidation:rule="has(self.zoneId) || has(self.region)",message="at least one of 'zoneId' or 'region' must be specified"
 type CellSpec struct {
+	// ServingControlTokenSecretRef holds SHA256(migration key), encoded as 64 hex
+	// characters. Gateways cannot decrypt the source credential catalog with it.
+	// Owned independently of the parent cluster during migration provisioning.
+	// +optional
+	ServingControlTokenSecretRef *corev1.SecretKeySelector `json:"servingControlTokenSecretRef,omitempty"`
 	// Name is the logical name of the cell.
 	Name CellName `json:"name"`
 	// ZoneID indicates the physical availability zone ID (e.g. use1-az1).
@@ -265,8 +270,8 @@ type Cell struct {
 
 // CellList contains a list of Cell
 type CellList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
+	metav1.TypeMeta `       json:",inline"`
+	metav1.ListMeta `       json:"metadata,omitempty"`
 	Items           []Cell `json:"items"`
 }
 

@@ -270,6 +270,44 @@ func BuildMultigatewayDeployment(
 
 	podSpec := &deployment.Spec.Template.Spec
 	defaultMode := int32(0o444)
+	if ref := cell.Spec.ServingControlTokenSecretRef; ref != nil {
+		if !cell.Spec.InternalTLS.IsEnabled() {
+			return nil, fmt.Errorf("serving control requires internal mTLS")
+		}
+		if ref.Name == "" || ref.Key == "" {
+			return nil, fmt.Errorf("serving control token Secret reference required")
+		}
+		podSpec.Volumes = append(
+			podSpec.Volumes,
+			corev1.Volume{
+				Name: "serving-token",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  ref.Name,
+						DefaultMode: &defaultMode,
+						Items:       []corev1.KeyToPath{{Key: ref.Key, Path: "token"}},
+					},
+				},
+			},
+		)
+		podSpec.Containers[0].VolumeMounts = append(
+			podSpec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{
+				Name:      "serving-token",
+				MountPath: "/etc/multigres/serving",
+				ReadOnly:  true,
+			},
+		)
+		podSpec.Containers[0].Args = append(
+			podSpec.Containers[0].Args,
+			"--serving-control-token-file=/etc/multigres/serving/token",
+			"--pg-admin-port=5434",
+		)
+		podSpec.Containers[0].Ports = append(
+			podSpec.Containers[0].Ports,
+			corev1.ContainerPort{Name: "pg-admin", ContainerPort: 5434},
+		)
+	}
 	if cell.Spec.InternalTLS.IsEnabled() {
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 			Name: internalTLSVolumeName,

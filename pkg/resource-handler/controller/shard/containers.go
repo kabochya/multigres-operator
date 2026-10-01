@@ -633,6 +633,12 @@ func buildMultipoolerContainer(
 		env = append(env, otelVars...)
 	}
 	c.Env = env
+	if shard.Spec.MigrationKeySecretRef != nil {
+		c.Args = append(c.Args, "--migration-key-file="+migrationKeyPath)
+		if shardTLSConfigured(shard) {
+			c.Args = append(c.Args, migrationClientTLSArgs(shard)...)
+		}
+	}
 
 	c.VolumeMounts = []corev1.VolumeMount{
 		{
@@ -666,6 +672,9 @@ func buildMultipoolerContainer(
 
 	if shardTLSConfigured(shard) {
 		c.VolumeMounts = append(c.VolumeMounts, shardTLSVolumeMount())
+	}
+	if shard.Spec.MigrationKeySecretRef != nil {
+		c.VolumeMounts = append(c.VolumeMounts, migrationKeyMount())
 	}
 	if multigresv1alpha1.TopoClientTLSConfigured(shard.Spec.GlobalTopoServer) {
 		c.VolumeMounts = append(c.VolumeMounts, multigresv1alpha1.TopoClientTLSVolumeMount())
@@ -831,6 +840,9 @@ func buildPoolVolumes(shard *multigresv1alpha1.Shard, cellName string) []corev1.
 		buildPostgresPasswordVolume(shard),
 		buildPostgresConfigVolume(shard),
 		buildPostgresExporterQueriesVolume(shard),
+	}
+	if shard.Spec.MigrationKeySecretRef != nil {
+		volumes = append(volumes, migrationKeyVolume(shard.Spec.MigrationKeySecretRef))
 	}
 	if initSecretsVol := buildPostgresInitSecretsVolume(shard); initSecretsVol != nil {
 		volumes = append(volumes, *initSecretsVol)

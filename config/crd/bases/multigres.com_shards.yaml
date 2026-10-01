@@ -360,6 +360,31 @@ spec:
                     - error
                     type: string
                 type: object
+              migrationKeySecretRef:
+                description: |-
+                  MigrationKeySecretRef contains the 32-byte catalog encryption key. Mounts
+                  into managed and source poolers only. Gateways do not receive this key.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
               multiorch:
                 description: Multiorch is the fully resolved configuration for the
                   shard orchestrator.
@@ -2909,6 +2934,149 @@ spec:
                       entries but never removes them.
                       Default: true (nil or empty means enabled).
                     type: boolean
+                type: object
+              unmanagedPoolers:
+                additionalProperties:
+                  description: |-
+                    UnmanagedPoolerSpec configures pooler-only pods for one external connection.
+                    Endpoint credentials stay in the encrypted target catalog, never in this CR.
+                  properties:
+                    cells:
+                      description: Cells must already exist in the cluster topology.
+                      items:
+                        description: CellName is a validated name for a cell (availability
+                          zone unit) within a cluster.
+                        maxLength: 30
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: cell name 'global' is reserved for the global topology
+                          rule: self != 'global'
+                      maxItems: 10
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    connectionBudget:
+                      description: |-
+                        ConnectionBudget caps application pools across all cells. Two extra admin
+                        connections per process are reserved separately; account for these on the source.
+                      format: int32
+                      minimum: 4
+                      type: integer
+                    connectionName:
+                      description: |-
+                        ConnectionName names an immutable catalog connection provisioned through
+                        the protected managed-authority API. Credential rotation is not supported.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    multipooler:
+                      description: Multipooler configures resources and container
+                        security context.
+                      properties:
+                        resources:
+                          description: Resources defines the compute resource requirements.
+                          properties:
+                            claims:
+                              description: |-
+                                Claims lists the names of resources, defined in spec.resourceClaims,
+                                that are used by this container.
+
+                                This field depends on the
+                                DynamicResourceAllocation feature gate.
+
+                                This field is immutable. It can only be set for containers.
+                              items:
+                                description: ResourceClaim references one entry in
+                                  PodSpec.ResourceClaims.
+                                properties:
+                                  name:
+                                    description: |-
+                                      Name must match the name of one entry in pod.spec.resourceClaims of
+                                      the Pod where this field is used. It makes that resource available
+                                      inside a container.
+                                    type: string
+                                  request:
+                                    description: |-
+                                      Request is the name chosen for a request in the referenced claim.
+                                      If empty, everything from the claim is made available, otherwise
+                                      only the result of this request.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - name
+                              x-kubernetes-list-type: map
+                            limits:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Limits describes the maximum amount of compute resources allowed.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                            requests:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Requests describes the minimum amount of compute resources required.
+                                If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                          type: object
+                        runAsGroup:
+                          description: |-
+                            RunAsGroup sets the primary GID for the container process. Same
+                            operator-supplied default and same caveats as RunAsUser.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        runAsUser:
+                          description: |-
+                            RunAsUser sets the UID for the container process. For Postgres and
+                            Multipooler, leaving this unset does not fall back to the image's own
+                            user: the operator applies its own default numeric UID (shared between
+                            the two so both can reach PGDATA), because pgctld declares USER
+                            postgres by name and Kubernetes cannot enforce RunAsNonRoot without a
+                            numeric UID. A custom image that runs as a different user must set
+                            this explicitly - including when reusing a PersistentVolume whose data
+                            is already owned by another UID, since a mismatch there fails the pod
+                            at startup rather than at scheduling.
+                          format: int64
+                          minimum: 1
+                          type: integer
+                      type: object
+                    replicasPerCell:
+                      default: 1
+                      description: ReplicasPerCell defaults to one. Pods never restart
+                        a process with the same identity.
+                      format: int32
+                      maximum: 8
+                      minimum: 1
+                      type: integer
+                  required:
+                  - cells
+                  - connectionBudget
+                  - connectionName
+                  type: object
+                  x-kubernetes-validations:
+                  - message: source connection reference is immutable in v1
+                    rule: self.connectionName == oldSelf.connectionName
+                description: |-
+                  UnmanagedPoolers provisions source proxies independently of managed pools.
+                  This field is owned by the migration operator, not the parent TableGroup.
+                maxProperties: 1
                 type: object
             required:
             - databaseName

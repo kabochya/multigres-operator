@@ -3,6 +3,7 @@ package shard
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/multigres/multigres/go/common/rpcclient"
@@ -286,6 +287,7 @@ func (r *ShardReconciler) reconcilePodRoles(
 		return
 	}
 
+	podList.Items = slices.DeleteFunc(podList.Items, isUnmanagedPod)
 	podNames := make([]string, len(podList.Items))
 	for i := range podList.Items {
 		podNames[i] = podList.Items[i].Name
@@ -356,6 +358,7 @@ func (r *ShardReconciler) reconcilePosture(
 	); err != nil {
 		return 0, fmt.Errorf("list pods for posture reconciliation: %w", err)
 	}
+	podList.Items = slices.DeleteFunc(podList.Items, isUnmanagedPod)
 	podNames := make([]string, len(podList.Items))
 	for i := range podList.Items {
 		podNames[i] = podList.Items[i].Name
@@ -538,6 +541,9 @@ func (r *ShardReconciler) reconcileDrainState(
 	requeue := false
 	for i := range podList.Items {
 		pod := &podList.Items[i]
+		if isUnmanagedPod(*pod) {
+			continue
+		}
 		state := pod.Annotations[metadata.AnnotationDrainState]
 		if state == "" {
 			continue

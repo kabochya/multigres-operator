@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	v1 "github.com/multigres/multigres-operator/api/v1alpha1"
 	"github.com/multigres/multigres-operator/pkg/data-handler/poolerclient"
 	"github.com/multigres/multigres-operator/pkg/util/metadata"
@@ -90,13 +92,44 @@ func (r *ShardReconciler) finishSourceShutdown(
 		Cell:      p.Labels[metadata.LabelMultigresCell],
 		Name:      "k8s-" + string(p.UID),
 	}
-	if err = store.UnregisterMultipooler(
-		ctx,
-		id,
-	); err != nil &&
-		!errors.Is(err, &topoclient.TopoError{Code: topoclient.NoNode}) {
+	// Preserve shutdown evidence for in-flight fence recovery. A missing record
+	// can be recreated only because Kubernetes proved this exact UID terminated.
+	_, err = store.UpdateMultipoolerFields(ctx, id, func(pooler *pb.Multipooler) error {
+		pooler.ServingStatus = pb.PoolerServingStatus_DISABLED
+		pooler.RoutingState = nil
+		pooler.LifecycleStatus = &pb.PoolerLifecycle{
+			Status:  pb.PoolerLifecycleStatus_LIFECYCLE_SHUTDOWN,
+			Reason:  "source container termination confirmed",
+			Updated: timestamppb.Now(),
+		}
+		return nil
+	})
+	if errors.Is(err, &topoclient.TopoError{Code: topoclient.NoNode}) {
+		err = store.RegisterMultipooler(
+			ctx,
+			&pb.Multipooler{
+				Id: id,
+				ShardKey: &pb.ShardKey{
+					Database:   string(s.Spec.DatabaseName),
+					TableGroup: string(s.Spec.TableGroupName),
+					Shard:      string(s.Spec.ShardName),
+				},
+				ManagementMode:   pb.PoolerManagementMode_POOLER_MANAGEMENT_MODE_UNMANAGED,
+				SourceConnection: p.Labels[sourceConnectionLabel],
+				ServingStatus:    pb.PoolerServingStatus_DISABLED,
+				LifecycleStatus: &pb.PoolerLifecycle{
+					Status:  pb.PoolerLifecycleStatus_LIFECYCLE_SHUTDOWN,
+					Reason:  "source container termination confirmed",
+					Updated: timestamppb.Now(),
+				},
+			},
+			true,
+		)
+	}
+	if err != nil {
 		return err
 	}
+
 	patch := client.MergeFrom(p.DeepCopy())
 	p.Finalizers = slices.DeleteFunc(
 		p.Finalizers,
@@ -210,6 +243,7 @@ func (r *ShardReconciler) reconcileUnmanagedPoolers(
 		for _, p := range poolers {
 			if p.ManagementMode == pb.PoolerManagementMode_POOLER_MANAGEMENT_MODE_UNMANAGED &&
 				strings.HasPrefix(p.GetId().GetName(), "k8s-") &&
+				p.GetLifecycleStatus().GetStatus() != pb.PoolerLifecycleStatus_LIFECYCLE_SHUTDOWN &&
 				!known[p.GetId().GetName()] {
 				return pending, fmt.Errorf(
 					"source process %s has no shutdown proof; refusing replacement",
@@ -218,10 +252,62 @@ func (r *ShardReconciler) reconcileUnmanagedPoolers(
 			}
 		}
 	}
+	if !pending && len(desired) == 0 && len(existing.Items) == 0 &&
+		s.Spec.MigrationKeySecretRef != nil &&
+		(removeAll || len(s.Spec.UnmanagedPoolers) == 0) {
+		if err := r.cleanupSourceShutdownProof(ctx, s); err != nil {
+			return true, err
+		}
+	}
 	for _, pod := range desired {
 		if err := r.Create(ctx, pod); err != nil {
 			return pending, err
 		}
 	}
 	return pending, nil
+}
+
+// Terminal cleanup may remove retained proofs only after authoritative completion.
+func (r *ShardReconciler) cleanupSourceShutdownProof(ctx context.Context, s *v1.Shard) error {
+	store, err := r.topoStore(ctx, s)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	poolers, err := migrationcontrol.Poolers(ctx, store, string(s.Spec.DatabaseName))
+	if err != nil {
+		return err
+	}
+	var retired []*pb.ID
+	for _, pooler := range poolers {
+		if pooler.ManagementMode == pb.PoolerManagementMode_POOLER_MANAGEMENT_MODE_UNMANAGED &&
+			strings.HasPrefix(pooler.GetId().GetName(), "k8s-") &&
+			pooler.GetLifecycleStatus().
+				GetStatus() ==
+				pb.PoolerLifecycleStatus_LIFECYCLE_SHUTDOWN &&
+			pooler.GetShardKey().GetTableGroup() == string(s.Spec.TableGroupName) &&
+			pooler.GetShardKey().GetShard() == string(s.Spec.ShardName) {
+			retired = append(retired, pooler.Id)
+		}
+	}
+	if len(retired) == 0 {
+		return nil
+	}
+	state, err := r.migrationRouting(ctx, s)
+	if err != nil {
+		return err
+	}
+	if !state.MigrationCompleted {
+		return nil
+	}
+	for _, id := range retired {
+		if err := store.UnregisterMultipooler(
+			ctx,
+			id,
+		); err != nil &&
+			!errors.Is(err, &topoclient.TopoError{Code: topoclient.NoNode}) {
+			return err
+		}
+	}
+	return nil
 }

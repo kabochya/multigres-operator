@@ -211,3 +211,76 @@ func TestMissingSourceProcessBlocksReplacement(t *testing.T) {
 	require.NoError(t, c.List(t.Context(), pods))
 	require.Empty(t, pods.Items)
 }
+
+func TestShutdownProofRetainedAndReplacementUsesFreshUID(t *testing.T) {
+	ctx := t.Context()
+	s := migrationShard()
+	spec := s.Spec.UnmanagedPoolers["source"]
+	spec.Cells = []v1.CellName{"cell1"}
+	s.Spec.UnmanagedPoolers["source"] = spec
+	scheme := testScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	pod, err := BuildUnmanagedPoolerPod(s, "source", "cell1", spec, 0, scheme)
+	require.NoError(t, err)
+	pod.UID = types.UID("old-process")
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{
+			Name: "multipooler",
+			State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{ExitCode: 137},
+			},
+		},
+	}
+	_, factory := memorytopo.NewServerAndFactory(ctx, "cell1")
+	newStore := func(*v1.Shard) (topoclient.Store, error) {
+		return topoclient.NewWithFactory(
+			factory,
+			"",
+			[]string{""},
+			topoclient.NewDefaultTopoConfig(),
+		), nil
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&corev1.Pod{}).
+		WithObjects(s, pod).
+		Build()
+	r := &ShardReconciler{Client: c, Scheme: scheme, CreateTopoStore: newStore}
+	require.NoError(t, r.finishSourceShutdown(ctx, s, pod))
+	store, err := newStore(s)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	proof, err := store.GetMultipooler(
+		ctx,
+		&pb.ID{Component: pb.ID_MULTIPOOLER, Cell: "cell1", Name: "k8s-old-process"},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		pb.PoolerLifecycleStatus_LIFECYCLE_SHUTDOWN,
+		proof.GetLifecycleStatus().GetStatus(),
+	)
+	// Retained proof does not block provisioning a new Pod with a fresh runtime UID.
+	require.NoError(t, c.Delete(ctx, pod))
+	_, err = r.reconcileUnmanagedPoolers(ctx, s, false)
+	require.NoError(t, err)
+	replacement := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), replacement))
+	require.NotEqual(t, types.UID("old-process"), replacement.UID)
+	state := &pb.MigrationRouting{Mode: pb.MigrationMode_MIGRATION_MODE_FENCED}
+	var readErr error
+	r.ReadMigrationRouting = func(context.Context, *v1.Shard) (*pb.MigrationRouting, error) { return state, readErr }
+	readErr = errors.New("authority unavailable")
+	require.Error(t, r.cleanupSourceShutdownProof(ctx, s))
+	_, err = store.GetMultipooler(ctx, proof.Id)
+	require.NoError(t, err)
+	readErr = nil
+	require.NoError(t, r.cleanupSourceShutdownProof(ctx, s))
+	_, err = store.GetMultipooler(ctx, proof.Id)
+	require.NoError(t, err, "incomplete migration retains shutdown proof")
+	state.Mode = pb.MigrationMode_MIGRATION_MODE_MANAGED
+	state.MigrationCompleted = true
+	require.NoError(t, r.cleanupSourceShutdownProof(ctx, s))
+	_, err = store.GetMultipooler(ctx, proof.Id)
+	require.True(t, errors.Is(err, &topoclient.TopoError{Code: topoclient.NoNode}))
+}

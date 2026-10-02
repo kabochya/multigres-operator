@@ -168,4 +168,4 @@ exclude (
 	google.golang.org/genproto v0.0.0-20200423170343-7949de9c1215
 )
 
-replace github.com/multigres/multigres => github.com/kabochya/multigres v0.0.0-20261001230925-484b37958dac
+replace github.com/multigres/multigres => github.com/kabochya/multigres v0.0.0-20261002000621-231454d3d0cf

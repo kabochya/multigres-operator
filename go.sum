@@ -171,8 +171,8 @@ github.com/jcmturner/rpc/v2 v2.0.3 h1:7FXXj8Ti1IaVFpSAziCZWNzbNuZmnvw/i6CqLNdWfZ
 github.com/jcmturner/rpc/v2 v2.0.3/go.mod h1:VUJYCIDm3PVOEHw8sgt091/20OJjskO/YJki3ELg/Hc=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
-github.com/kabochya/multigres v0.0.0-20261001230925-484b37958dac h1:PY6InMjvlObaWmkxDiX6Dx/jA+WsIHbwECHukjOItuo=
-github.com/kabochya/multigres v0.0.0-20261001230925-484b37958dac/go.mod h1:Efms5VpGXSTFNXm3FEIpxIg/3UeszwzSjcVCg+V06UU=
+github.com/kabochya/multigres v0.0.0-20261002000621-231454d3d0cf h1:wPzxhhN6o9vmxjFqgysb/9NHoUIBya3HG1infxMplIM=
+github.com/kabochya/multigres v0.0.0-20261002000621-231454d3d0cf/go.mod h1:Efms5VpGXSTFNXm3FEIpxIg/3UeszwzSjcVCg+V06UU=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/compress v1.19.1 h1:VsB4HPswih7mmZ8WleSFQ75c/Ui1M4trX5oAsJnhSlk=
